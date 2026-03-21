@@ -61,16 +61,33 @@ jobs:
               with urllib.request.urlopen(req) as resp:
                   return json.loads(resp.read().decode("utf-8"))
 
-          def post_discord(content):
-              data = json.dumps({"content": content}).encode("utf-8")
-              req = urllib.request.Request(
-                  WEBHOOK_URL,
-                  data=data,
-                  headers={"Content-Type": "application/json"},
-                  method="POST"
-              )
-              with urllib.request.urlopen(req) as resp:
-                  resp.read()
+            def post_discord(content):
+                data = json.dumps({
+                    "content": content,
+                    "allowed_mentions": {"parse": []}
+                }).encode("utf-8")
+
+                req = urllib.request.Request(
+                    WEBHOOK_URL,
+                    data=data,
+                    headers={
+                        "Content-Type": "application/json",
+                        "User-Agent": "landsandboat-pr-notifier"
+                    },
+                    method="POST"
+                )
+
+                try:
+                    with urllib.request.urlopen(req) as resp:
+                        body = resp.read().decode("utf-8", errors="replace")
+                        if body:
+                            print(body)
+                        return True
+                except urllib.error.HTTPError as e:
+                    body = e.read().decode("utf-8", errors="replace")
+                    print(f"Discord post failed: HTTP {e.code} {e.reason}")
+                    print(body)
+                    return False
 
           def iso_to_dt(s):
               return datetime.fromisoformat(s.replace("Z", "+00:00"))
