@@ -2,7 +2,8 @@ name: LandSandBoat PR Notifier
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    # Daily at 13:00 UTC (9 AM EDT / 8 AM EST). Adjust as desired.
+    - cron: "0 13 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -43,6 +44,8 @@ jobs:
           REPO = "server"
           STATE_FILE = "pr_state.json"
           WEBHOOK_URL = os.environ["WEBHOOK_URL"]
+          # Discord's hard limit is 2000 chars per message; stay comfortably under it.
+          DISCORD_MAX = 1900
 
           API_URL = f"https://api.github.com/repos/{OWNER}/{REPO}/pulls?state=all&sort=updated&direction=desc&per_page=100"
 
@@ -94,9 +97,26 @@ jobs:
                   print(body)
                   return False
 
-          def sort_key(msg):
-              m = re.search(r"#(\d+)", msg)
+          def sort_key(line):
+              m = re.search(r"#(\d+)", line)
               return int(m.group(1)) if m else 0
+
+          def chunk_text(text, max_len):
+              """Split a long message into Discord-sized chunks, preferring newline breaks."""
+              if len(text) <= max_len:
+                  return [text]
+              chunks = []
+              current = ""
+              for line in text.split("\n"):
+                  candidate = current + ("\n" if current else "") + line
+                  if len(candidate) > max_len and current:
+                      chunks.append(current)
+                      current = line
+                  else:
+                      current = candidate
+              if current:
+                  chunks.append(current)
+              return chunks
 
           state = load_state()
           first_run = not os.path.exists(STATE_FILE)
@@ -105,8 +125,8 @@ jobs:
           opened_seen = state.get("opened_seen", {})
           merged_seen = state.get("merged_seen", {})
 
-          opened_messages = []
-          merged_messages = []
+          opened_lines = []
+          merged_lines = []
 
           for pr in prs:
               num = str(pr["number"])
@@ -120,28 +140,39 @@ jobs:
               if num not in opened_seen:
                   opened_seen[num] = created_at
                   if not first_run:
-                      opened_messages.append(
-                          f"🟢 PR opened: #{num} {title} — @{author}\n{url}"
-                      )
+                      # <url> form suppresses Discord's link preview so a long digest
+                      # doesn't explode into dozens of embeds.
+                      opened_lines.append(f"• #{num} {title} — @{author} <{url}>")
 
               if merged_at and num not in merged_seen:
                   merged_seen[num] = merged_at
                   if not first_run:
                       who = f" by @{merged_by}" if merged_by else ""
-                      merged_messages.append(
-                          f"🔵 PR merged: #{num} {title}{who}\n{url}"
-                      )
+                      merged_lines.append(f"• #{num} {title}{who} <{url}>")
+
+          opened_lines.sort(key=sort_key)
+          merged_lines.sort(key=sort_key)
 
           discord_ok = True
 
-          for msg in sorted(opened_messages, key=sort_key):
-              if not post_discord(msg):
-                  discord_ok = False
-                  break
+          if not opened_lines and not merged_lines:
+              print("No new PR activity since last run; skipping Discord post.")
+          else:
+              today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+              parts = [f"📊 **LandSandBoat PR Daily Summary** — {today}"]
+              if opened_lines:
+                  parts.append("")
+                  parts.append(f"🟢 **Opened ({len(opened_lines)})**")
+                  parts.extend(opened_lines)
+              if merged_lines:
+                  parts.append("")
+                  parts.append(f"🔵 **Merged ({len(merged_lines)})**")
+                  parts.extend(merged_lines)
 
-          if discord_ok:
-              for msg in sorted(merged_messages, key=sort_key):
-                  if not post_discord(msg):
+              full_message = "\n".join(parts)
+
+              for chunk in chunk_text(full_message, DISCORD_MAX):
+                  if not post_discord(chunk):
                       discord_ok = False
                       break
 
